@@ -1,0 +1,18 @@
+# Build output
+build/
+app/build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+
+# IDE / machine-specific
+.idea/
+*.iml
+local.properties
+.DS_Store
+
+# Your personal files: never commit these
+config.json
+backups/
+wallpapers/

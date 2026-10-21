@@ -1,0 +1,7 @@
+{
+  "name": "Sam",
+  "place": "Lisbon",
+  "latitude": 38.72,
+  "longitude": -9.14,
+  "dock": ["com.google.android.youtube.tv", "com.netflix.ninja", "com.spotify.tv.android"]
+}
