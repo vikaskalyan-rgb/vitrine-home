@@ -88,7 +88,7 @@ the TV's own settings page.
 
 ![Screensaver](docs/screenshots/09-screensaver.jpg)
 
-Your wallpapers cross-fade slowly with the clock. Turn it on with:
+Your Home wallpaper, drifting very slowly, with the clock. Turn it on with:
 
 ```sh
 scripts/vitrine.sh screensaver 192.168.1.50

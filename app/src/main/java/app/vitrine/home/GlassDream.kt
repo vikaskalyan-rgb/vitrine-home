@@ -21,22 +21,20 @@ import java.io.File
 import java.util.Calendar
 
 /**
- * Vitrine Home screensaver: your Home wallpapers crossfading slowly, with a very slow drift (off with
- * Reduce motion), and the clock in the same type as Home. The clock shifts a little each photo so
- * nothing stays burned into the same pixels. Dimmer at night when Evening mode is on.
+ * Vitrine Home screensaver: your Home wallpaper with a very slow drift (off with Reduce motion), and
+ * the clock in the same type as Home. The clock shifts a little every 45 s so nothing stays burned
+ * into the same pixels. Dimmer at night when Evening mode is on.
  */
 class GlassDream : DreamService() {
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var views: Array<ImageView>
     private lateinit var clockBox: View
     private var front = 0
-    private var idx = 0
-    private var photos: List<File> = emptyList()
     private val prefs by lazy { getSharedPreferences("layout", Context.MODE_PRIVATE) }
     private val reduce get() = prefs.getBoolean("reduce_motion", false)
     private var sy = 1f
     private val next = object : Runnable {
-        override fun run() { advance(); ui.postDelayed(this, HOLD_MS) }
+        override fun run() { drift(); ui.postDelayed(this, HOLD_MS) }
     }
 
     override fun onAttachedToWindow() {
@@ -77,10 +75,18 @@ class GlassDream : DreamService() {
 
     override fun onDreamingStarted() {
         super.onDreamingStarted()
-        photos = listPhotos()
-        idx = (prefs.getInt("wp_n", 1) - 1).coerceAtLeast(0)
-        advance()
-        ui.postDelayed(next, HOLD_MS)
+        // Only the wallpaper chosen for Home: no rotation.
+        Thread {
+            val bmp = load() ?: return@Thread
+            ui.post {
+                val v = views[front]
+                v.setImageBitmap(bmp)
+                v.animate().alpha(1f).setDuration(1500).start()
+                step = 0
+                drift()
+                ui.postDelayed(next, HOLD_MS)
+            }
+        }.start()
     }
 
     override fun onDreamingStopped() {
@@ -93,22 +99,25 @@ class GlassDream : DreamService() {
         super.onDetachedFromWindow()
     }
 
-    private fun listPhotos(): List<File> {
-        val dir = getExternalFilesDir(null) ?: return emptyList()
+    /** The Home wallpaper: the numbered photo picked in the Wallpaper sheet, else wallpaper.jpg, else the built-in one. */
+    private fun currentPhoto(): File? {
+        val dir = getExternalFilesDir(null) ?: return null
         val re = Regex("^(\\d{1,2})\\.(jpg|jpeg|png|webp)$", RegexOption.IGNORE_CASE)
         val numbered = File(dir, "wallpapers").listFiles()?.mapNotNull { f ->
             re.find(f.name)?.groupValues?.get(1)?.toIntOrNull()?.let { it to f }
-        }?.sortedBy { it.first }?.map { it.second } ?: emptyList()
-        if (numbered.isNotEmpty()) return numbered
-        return File(dir, "wallpaper.jpg").let { if (it.exists()) listOf(it) else emptyList() }
+        }?.sortedBy { it.first } ?: emptyList()
+        if (numbered.isNotEmpty()) {
+            val want = prefs.getInt("wp_n", numbered.first().first)
+            return (numbered.firstOrNull { it.first == want } ?: numbered.first()).second
+        }
+        return File(dir, "wallpaper.jpg").takeIf { it.exists() }
     }
 
-    private fun load(i: Int): Bitmap? {
+    private fun load(): Bitmap? {
         val dm = resources.displayMetrics
         val w = maxOf(dm.widthPixels, dm.heightPixels); val h = minOf(dm.widthPixels, dm.heightPixels)
         return try {
-            if (photos.isEmpty()) return BitmapFactory.decodeResource(resources, R.drawable.wallpaper)
-            val f = photos[i % photos.size]
+            val f = currentPhoto() ?: return BitmapFactory.decodeResource(resources, R.drawable.wallpaper)
             val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(f.path, b)
             var s = 1
@@ -117,26 +126,24 @@ class GlassDream : DreamService() {
         } catch (_: Throwable) { null }
     }
 
-    /** Next photo into the back view, crossfade over 2.5 s, then a slow drift until the next one. */
-    private fun advance() {
-        val i = idx; idx++
-        Thread {
-            val bmp = load(i) ?: return@Thread
-            ui.post {
-                val back = views[1 - front]; val old = views[front]
-                back.setImageBitmap(bmp)
-                back.scaleX = 1f; back.scaleY = 1f; back.translationX = 0f
-                back.animate().cancel()
-                back.animate().alpha(1f).setDuration(2500).start()
-                old.animate().alpha(0f).setDuration(2500).start()
-                if (!reduce) back.animate().scaleX(1.07f).scaleY(1.07f).translationX(if (i % 2 == 0) 24f * sy else -24f * sy)
-                    .setDuration(HOLD_MS + 2500).setInterpolator(LinearInterpolator()).start()
-                front = 1 - front
-                // Burn-in care: nudge the clock a few pixels each photo.
-                clockBox.translationX = ((i % 5) - 2) * 14f * sy
-                clockBox.translationY = -((i % 3)) * 10f * sy
-            }
-        }.start()
+    private var step = 0
+
+    /**
+     * Every 45 s: the photo drifts slowly in, then back out (off with Reduce motion), and the clock
+     * moves a few pixels, so nothing stays fixed on the same part of the panel.
+     */
+    private fun drift() {
+        val v = views[front]
+        if (!reduce) {
+            val zoomIn = step % 2 == 0
+            val dir = if (step % 4 == 0) 1f else -1f
+            v.animate().scaleX(if (zoomIn) 1.07f else 1f).scaleY(if (zoomIn) 1.07f else 1f)
+                .translationX(if (zoomIn) 24f * sy * dir else 0f)
+                .setDuration(HOLD_MS).setInterpolator(LinearInterpolator()).start()
+        }
+        clockBox.translationX = ((step % 5) - 2) * 14f * sy
+        clockBox.translationY = -((step % 3)) * 10f * sy
+        step++
     }
 
     companion object { private const val HOLD_MS = 45_000L }
