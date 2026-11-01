@@ -1,0 +1,32 @@
+# Builds the debug APK on GitHub's machines (they have the Android SDK) and publishes it as
+# vitrine-home.apk on the "apk-builds" branch, so a TV can be set up from any computer with just adb.
+name: Build APK
+on:
+  push:
+    branches: [ci]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build
+        run: chmod +x gradlew && ./gradlew --no-daemon assembleDebug
+      - name: Publish to the apk-builds branch
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk /tmp/vitrine-home.apk
+          git config user.name "Vitrine Home CI"
+          git config user.email "noreply@users.noreply.github.com"
+          git checkout --orphan apk-builds
+          git rm -rf --quiet .
+          cp /tmp/vitrine-home.apk vitrine-home.apk
+          echo "${GITHUB_SHA}" > built-from.txt
+          git add vitrine-home.apk built-from.txt
+          git commit -m "APK built from ${GITHUB_SHA::7}"
+          git push -f origin apk-builds
