@@ -36,6 +36,18 @@ the Android SDK.
    scripts/vitrine.sh home 192.168.1.50
    ```
 
+## What's on Home
+
+- **Lock-screen clock:** a tall glass clock (Antonio Light) with the date and weather above it. Its
+  colours come from the wallpaper. When the photo has a cut-out (`<photo>_mask.png` next to it, or the
+  built-in wallpaper's hills), the scenery is drawn in front of the digits, and the clock moves to
+  where that looks right while every digit stays readable.
+- **Player above the dock:** what's playing (or what played last), a wave that follows the music,
+  previous / play-pause / next. Hold OK for 2 seconds to search for a song (Spotify or YouTube Music).
+- **Top bar:** RAM and storage in use, and a ✨ button that closes apps sitting in the background.
+- **Quotes:** a famous game or film line, bottom right, a new one every 10 seconds
+  (`app/src/main/res/raw/quotes.txt`, or push your own `quotes.txt` to the app's files folder).
+
 ## Using it
 
 ### Home
@@ -51,8 +63,7 @@ the Android SDK.
 | Back | close a panel / back to the dock |
 | Hold Back for 5 seconds | open the TV's own home screen |
 
-After 20 seconds without a button press, Home goes **quiet**: only the photo, the clock and a dimmed
-dock stay. The first press wakes it without doing anything else.
+Home stays as it is when idle; the screensaver takes over after the TV's screensaver delay.
 
 ### The dock
 

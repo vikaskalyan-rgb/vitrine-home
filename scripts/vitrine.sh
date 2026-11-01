@@ -35,7 +35,7 @@ case "$cmd" in
     ./gradlew assembleDebug
     a install -r app/build/outputs/apk/debug/app-debug.apk
     for p in android.permission.READ_CALENDAR android.permission.ACCESS_FINE_LOCATION \
-             android.permission.BLUETOOTH_CONNECT com.android.providers.tv.permission.READ_EPG_DATA; do
+             android.permission.BLUETOOTH_CONNECT com.android.providers.tv.permission.READ_EPG_DATA android.permission.RECORD_AUDIO; do
       a shell pm grant $PKG $p 2>/dev/null || true
     done
     a shell cmd notification allow_listener $PKG/$PKG.MediaListener 2>/dev/null || true

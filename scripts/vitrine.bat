@@ -36,7 +36,7 @@ goto usage
 :install
 call gradlew.bat assembleDebug || exit /b 1
 "%ADB%" -s %TV% install -r app\build\outputs\apk\debug\app-debug.apk || exit /b 1
-for %%p in (android.permission.READ_CALENDAR android.permission.ACCESS_FINE_LOCATION android.permission.BLUETOOTH_CONNECT com.android.providers.tv.permission.READ_EPG_DATA) do "%ADB%" -s %TV% shell pm grant %PKG% %%p >nul 2>&1
+for %%p in (android.permission.READ_CALENDAR android.permission.ACCESS_FINE_LOCATION android.permission.BLUETOOTH_CONNECT com.android.providers.tv.permission.READ_EPG_DATA android.permission.RECORD_AUDIO) do "%ADB%" -s %TV% shell pm grant %PKG% %%p >nul 2>&1
 "%ADB%" -s %TV% shell cmd notification allow_listener %PKG%/%PKG%.MediaListener >nul 2>&1
 "%ADB%" -s %TV% shell cmd package compile -m speed -f %PKG% >nul 2>&1
 call :restart

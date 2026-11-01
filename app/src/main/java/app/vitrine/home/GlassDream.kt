@@ -51,12 +51,17 @@ class GlassDream : DreamService() {
             background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(Color.argb(150, 0, 0, 0), Color.argb(0, 0, 0, 0)))
         }, FrameLayout.LayoutParams(-1, (460 * sy).toInt(), Gravity.BOTTOM))
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        box.addView(TextClock(this).apply {
+        // One line, never wrapped: the box is sized to the widest possible time ("00:00"), so a wider
+        // minute can't push the last digit onto a hidden second line (it used to show "20:3").
+        val time = TextClock(this).apply {
             format12Hour = "h:mm"; format24Hour = "H:mm"
             setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_PX, 120 * sy)
             typeface = Typeface.create("sans-serif-light", Typeface.NORMAL); includeFontPadding = false
             setShadowLayer(10f, 0f, 2f, Color.argb(110, 0, 0, 0))
-        })
+            isSingleLine = true; maxLines = 1; ellipsize = null; setHorizontallyScrolling(false)
+        }
+        time.minWidth = (time.paint.measureText("00:00") + 20 * sy).toInt()
+        box.addView(time, LinearLayout.LayoutParams(-2, -2))
         box.addView(TextClock(this).apply {
             format12Hour = "EEEE d MMMM"; format24Hour = "EEEE d MMMM"
             setTextColor(Color.argb(210, 255, 255, 255)); setTextSize(TypedValue.COMPLEX_UNIT_PX, 32 * sy)
@@ -91,6 +96,7 @@ class GlassDream : DreamService() {
 
     override fun onDreamingStopped() {
         ui.removeCallbacksAndMessages(null)
+        if (::views.isInitialized) for (v in views) v.setImageDrawable(null)   // let the photo go as soon as it ends
         super.onDreamingStopped()
     }
 
@@ -115,14 +121,16 @@ class GlassDream : DreamService() {
 
     private fun load(): Bitmap? {
         val dm = resources.displayMetrics
-        val w = maxOf(dm.widthPixels, dm.heightPixels); val h = minOf(dm.widthPixels, dm.heightPixels)
+        // On a 4K panel the photo is kept at 1920 x 1080 and scaled up by the graphics chip.
+        var w = maxOf(dm.widthPixels, dm.heightPixels); var h = minOf(dm.widthPixels, dm.heightPixels)
+        if (w >= 2560) { w /= 2; h /= 2 }
         return try {
             val f = currentPhoto() ?: return BitmapFactory.decodeResource(resources, R.drawable.wallpaper)
             val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(f.path, b)
             var s = 1
             while (b.outWidth / (s * 2) >= w && b.outHeight / (s * 2) >= h) s *= 2
-            BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s })
+            BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s; inPreferredConfig = Bitmap.Config.RGB_565 })
         } catch (_: Throwable) { null }
     }
 

@@ -31,6 +31,7 @@ import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.animation.DecelerateInterpolator
 import android.graphics.Outline
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -116,6 +117,28 @@ class MainActivity : Activity() {
     private lateinit var hintView: View
     private val chips = ArrayList<View>()
     private lateinit var nowBar: NowBar
+    // Lock-screen clock with depth, the player above the dock, quotes, RAM/storage.
+    private lateinit var clockLayer: LinearLayout
+    private lateinit var clockText: ElongatedClock
+    private lateinit var depthView: DepthView
+    private var dateWeatherIcon: WeatherIconView? = null
+    private var dateWeatherText: TextView? = null
+    private var wallFile: File? = null
+    private lateinit var nowChip: NowChip
+    private lateinit var quoteView: QuoteView
+    private val beat = BeatMeter()
+    private val suggestPool = java.util.concurrent.Executors.newFixedThreadPool(3)
+    private var searchSeq = 0
+    private var searchField: EditText? = null
+    private val statPills = ArrayList<StatPill>()
+    /** While a "Freed 280 MB" note shows on the RAM figure, the 3-second refresh leaves it alone. */
+    private var ramNoteUntil = 0L
+    private val statsTick = object : Runnable {
+        override fun run() { refreshStats(); ui.postDelayed(this, 3000L) }
+    }
+    private val quoteTick = object : Runnable {
+        override fun run() { quoteView.next(show = !quiet); ui.postDelayed(this, 10_000L) }
+    }
     private var quiet = false
     private var resumedNow = false
     private var awayFromHome = true
@@ -205,22 +228,78 @@ class MainActivity : Activity() {
         screenH = minOf(dm.widthPixels, dm.heightPixels)
         sx = screenW / 1920f; sy = screenH / 1080f
 
-        val wall = loadWallpaper(screenW, screenH)
-        glass = GlassSource(wall)
+        // On a 4K panel the wallpaper is kept at 1920 x 1080 and scaled up when drawn (a quarter of the memory).
+        val wallScale = if (screenW >= 2560) 2 else 1
+        val wall = loadWallpaper(screenW / wallScale, screenH / wallScale)
+        glass = GlassSource(wall, 8, screenW, screenH)
         Theme.wallLum = glass.luminance
         adaptToWallpaper()
 
+        // Scrims scale with how bright the wallpaper is, so text stays legible on any photo. They are
+        // painted into the wallpaper itself so the depth layer (the subject cut out of it) matches exactly.
+        run {
+            val c = Canvas(wall)
+            c.scale(1f / wallScale, 1f / wallScale)          // draw in screen units
+            val overall = ((glass.luminance - 0.30f) * 200f).toInt().coerceIn(0, 90)
+            if (overall > 0) c.drawColor(Color.argb(overall, 0, 0, 0))
+            val topShade = (50 + (glass.topLuminance - 0.3f) * 160f).toInt().coerceIn(40, 140)
+            c.drawRect(0f, 0f, screenW.toFloat(), Y(300f), Paint().apply {
+                shader = android.graphics.LinearGradient(0f, 0f, 0f, Y(300f), Color.argb(topShade, 0, 0, 0), Color.argb(0, 0, 0, 0), android.graphics.Shader.TileMode.CLAMP)
+            })
+        }
         root = FrameLayout(this).apply { clipChildren = false; clipToPadding = false }
         root.background = BitmapDrawable(resources, wall)
 
-        // Scrims scale with how bright the wallpaper is, so text stays legible on any photo.
-        val overall = ((glass.luminance - 0.30f) * 200f).toInt().coerceIn(0, 90)
-        if (overall > 0) root.addView(View(this).apply { setBackgroundColor(Color.argb(overall, 0, 0, 0)) },
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        val topShade = (50 + (glass.topLuminance - 0.3f) * 160f).toInt().coerceIn(40, 140)
-        root.addView(View(this).apply {
-            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.argb(topShade, 0, 0, 0), Color.argb(0, 0, 0, 0)))
-        }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Y(260f).toInt()))
+        // Lock-screen clock: date and weather, a tall glass time, greeting. The photo's subject (or the
+        // hills in front of the sky) is drawn again above it: the depth effect.
+        clockLayer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+        val dateLine = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        dateLine.addView(TextClock(this).apply {
+            format12Hour = "EEEE d MMMM"; format24Hour = "EEEE d MMMM"
+            setTextColor(Color.argb(238, 255, 255, 255)); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(32f))
+            typeface = Typeface.create(Typeface.DEFAULT, 500, false)
+            setShadowLayer(8f, 0f, 1f, Color.argb(60, 0, 0, 0)); includeFontPadding = false
+            isSingleLine = true
+        })
+        dateWeatherIcon = WeatherIconView(this)
+        dateLine.addView(dateWeatherIcon, LinearLayout.LayoutParams(Y(34f).toInt(), Y(34f).toInt()).apply { marginStart = X(18f).toInt() })
+        dateWeatherText = TextView(this).apply {
+            setTextColor(Color.argb(238, 255, 255, 255)); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(32f))
+            typeface = Typeface.create(Typeface.DEFAULT, 500, false)
+            setShadowLayer(8f, 0f, 1f, Color.argb(60, 0, 0, 0)); includeFontPadding = false
+            isSingleLine = true
+        }
+        dateLine.addView(dateWeatherText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = X(6f).toInt() })
+        clockLayer.addView(dateLine)
+        clockText = ElongatedClock(this, glass, Y(330f))
+        clockLayer.addView(clockText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = Y(4f).toInt() })
+        greeting = TextView(this).apply {
+            setTextColor(Color.argb(215, 255, 255, 255)); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(28f))
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setShadowLayer(6f, 0f, 1f, Color.argb(90, 0, 0, 0)); includeFontPadding = false
+        }
+        clockLayer.addView(greeting, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = Y(6f).toInt() })
+        updateGreeting()
+        root.addView(clockLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = Y(150f).toInt()
+        })
+        depthView = DepthView(this)
+        root.addView(depthView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // The cut-out: <photo>_mask.png next to the photo (made with rembg on a computer), or the one
+        // that comes with the built-in wallpaper (its hills).
+        val maskBmp: Bitmap? = try {
+            val wf = wallFile
+            if (wf == null) BitmapFactory.decodeResource(resources, R.drawable.wallpaper_mask, BitmapFactory.Options().apply { inScaled = false })
+            else File(wf.parentFile, wf.nameWithoutExtension + "_mask.png").takeIf { it.exists() }?.let { mf ->
+                val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(mf.path, o)
+                var sample = 1
+                while (o.outWidth / (sample * 2) >= wall.width && o.outHeight / (sample * 2) >= wall.height) sample *= 2
+                BitmapFactory.decodeFile(mf.path, BitmapFactory.Options().apply { inSampleSize = sample })
+            }
+        } catch (_: Throwable) { null }
+        if (!safeMode && depthView.build(wall, maskBmp, Y(860f).toInt(), screenW)) clockText.post { decideDepth() }
+        else depthView.visibility = View.GONE
 
         home = FrameLayout(this).apply { clipChildren = false; clipToPadding = false }
         root.addView(home, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -305,6 +384,24 @@ class MainActivity : Activity() {
         dockLayer.addView(nowBar, FrameLayout.LayoutParams(X(640f).toInt(), Y(90f).toInt(), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
             bottomMargin = Y(330f).toInt()
         })
+        // Now playing, always above the dock (the last thing played when nothing is playing).
+        // Left/Right choose previous, play/pause or next; OK presses it; hold OK 2 s to search for a song.
+        nowChip = NowChip(this, glass).apply {
+            onAction = { a -> when (a) { 0 -> skipTrack(-1); 2 -> skipTrack(1); else -> playPause() } }
+            onHold = { showMusicSearch() }
+            levels = { beat.levels() }
+        }
+        // 720 wide, centred: ends left of the widget column (which starts ~X(1360)).
+        dockLayer.addView(nowChip, FrameLayout.LayoutParams(X(720f).toInt(), Y(76f).toInt(), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = Y(330f).toInt()
+        })
+        showLastPlayed()
+        // Bottom right: a famous line from a favourite game or film, a random one every 10 seconds.
+        quoteView = QuoteView(this).apply { textPx = Y(25f) }
+        dockLayer.addView(quoteView, FrameLayout.LayoutParams(X(560f).toInt(), Y(150f).toInt(), Gravity.BOTTOM or Gravity.END).apply {
+            rightMargin = side; bottomMargin = Y(24f).toInt()
+        })
+        quoteView.load(loadQuotes())
 
         // Level 2: all apps. Wallpaper dims, glass tiles rise from below. Up from the top row or Back returns.
         gridLayer = FrameLayout(this).apply { visibility = View.GONE; clipChildren = false; clipToPadding = false }
@@ -370,6 +467,9 @@ class MainActivity : Activity() {
         loadContinueWatching()
         startMediaWatch()
         ui.removeCallbacks(tick); ui.post(tick)
+        ui.removeCallbacks(statsTick); ui.post(statsTick)
+        ui.removeCallbacks(quoteTick); ui.postDelayed(quoteTick, 10_000L)
+        nowChip.waveAllowed = true
         ui.removeCallbacks(rotate); ui.postDelayed(rotate, 10_000L)
         ui.removeCallbacks(progress); ui.post(progress)
         resumedNow = true
@@ -385,6 +485,8 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         ui.removeCallbacks(tick); ui.removeCallbacks(rotate); ui.removeCallbacks(progress)
+        ui.removeCallbacks(statsTick); ui.removeCallbacks(quoteTick)
+        beat.stop(); nowChip.waveAllowed = false
         resumedNow = false
         ui.removeCallbacks(quietRunnable)
         dismissDeviceCard(false)
@@ -425,7 +527,8 @@ class MainActivity : Activity() {
         val st = c?.playbackState
         val wasPlaying = nowPage.playing
         if (c == null || md == null || st == null || (st.state != PlaybackState.STATE_PLAYING && st.state != PlaybackState.STATE_PAUSED)) {
-            nowPage.title = null; stack.invalidate(); showNowBar(false); return
+            nowPage.title = null; stack.invalidate(); showNowBar(false); showLastPlayed()
+            beat.stop(); return
         }
         nowPage.title = md.getString(MediaMetadata.METADATA_KEY_TITLE) ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) ?: "Playing"
         nowPage.artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE) ?: ""
@@ -440,6 +543,9 @@ class MainActivity : Activity() {
             else s2.position
         }
         if (nowPage.playing && !wasPlaying) stack.showPage(nowPage)   // music just started: show it
+        nowChip.set(nowPage.title ?: "", nowPage.artist, nowPage.playing, nowPage.art)
+        if (nowPage.playing && resumedNow) beat.start() else beat.stop()
+        rememberLastPlayed(c.packageName, nowPage.title ?: "", nowPage.artist, nowPage.art)
         if (nowPage.playing) {
             ui.removeCallbacks(hideNowBar)
             nowBar.set(nowPage.title ?: "", nowPage.artist, true, nowPage.art); showNowBar(true)
@@ -449,6 +555,532 @@ class MainActivity : Activity() {
             ui.removeCallbacks(hideNowBar); ui.postDelayed(hideNowBar, 60_000L)
         }
         stack.invalidate()
+    }
+
+    // ---------- date line weather, RAM and storage, free memory ----------
+
+    private fun showWeather(w: Weather) {
+        weatherCard.weather = w
+        dateWeatherIcon?.let { it.code = w.code; it.isDay = w.isDay; it.invalidate() }
+        dateWeatherText?.text = "${w.temp}° ${weatherText(w.code)}"
+    }
+
+    private fun addStat(row: LinearLayout, glyph: Int, widest: String) {
+        val p = StatPill(this, glass, glyph, Y(22f), widest)
+        row.addView(p, LinearLayout.LayoutParams(p.preferredWidth, Y(64f).toInt()).apply { marginStart = X(12f).toInt() })
+        statPills.add(p)
+    }
+
+    /** RAM in use / total, storage in use / total. */
+    private fun refreshStats() {
+        if (statPills.size < 2) return
+        try {
+            val mi = ActivityManager.MemoryInfo()
+            (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
+            val gb = 1024.0 * 1024 * 1024
+            if (SystemClock.elapsedRealtime() >= ramNoteUntil)
+                statPills[0].value = "%.1f / %.1f GB".format((mi.totalMem - mi.availMem) / gb, mi.totalMem / gb)
+            val fs = StatFs(Environment.getDataDirectory().path)
+            val used = (fs.totalBytes - fs.availableBytes) / gb; val total = fs.totalBytes / gb
+            statPills[1].value = (if (used < 10) "%.1f" else "%.0f").format(used) + " / " + "%.0f".format(total) + " GB"
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * The sparkle button: closes apps sitting in the background (Android's own "kill background processes",
+     * the same as swiping them away), then shows how much memory came back on the RAM figure.
+     * Never touched: this home screen itself, whatever is playing, the keyboard, accessibility services,
+     * System UI and TV Settings.
+     */
+    private fun freeMemory() {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val mi0 = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi0)
+        val keep = HashSet<String>().apply {
+            add(packageName)
+            add("com.android.systemui"); add("com.android.tv.settings"); add("android")
+            controller?.let { c -> if (c.playbackState?.state == PlaybackState.STATE_PLAYING) add(c.packageName) }
+            Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)?.substringBefore('/')?.let { add(it) }
+            Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                ?.split(':')?.forEach { if (it.isNotBlank()) add(it.substringBefore('/')) }
+            packageManager.resolveActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0)
+                ?.activityInfo?.packageName?.let { add(it) }
+        }
+        statPills.getOrNull(0)?.value = "Freeing…"; ramNoteUntil = SystemClock.elapsedRealtime() + 10_000L
+        Thread {
+            val pkgs = HashSet<String>()
+            for (cat in arrayOf(Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER)) try {
+                packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(cat), 0)
+                    .forEach { pkgs += it.activityInfo.packageName }
+            } catch (_: Exception) {}
+            var closed = 0
+            for (p in pkgs) if (p !in keep) try { am.killBackgroundProcesses(p); closed++ } catch (_: Exception) {}
+            Runtime.getRuntime().gc()
+            try { Thread.sleep(1500) } catch (_: InterruptedException) {}
+            val mi1 = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi1)
+            val freed = ((mi1.availMem - mi0.availMem) / (1024 * 1024)).coerceAtLeast(0)
+            android.util.Log.d("Vitrine", "free memory: asked $closed apps to close, freed $freed MB")
+            ui.post {
+                statPills.getOrNull(0)?.value = if (freed >= 10) "Freed $freed MB" else "Already lean"
+                ramNoteUntil = SystemClock.elapsedRealtime() + 3500L
+                ui.postDelayed({ refreshStats() }, 3600L)
+            }
+        }.start()
+    }
+
+    // ---------- depth effect: where the clock goes ----------
+
+    /**
+     * iOS lets you drag the photo until the subject sits under the clock; a TV can't, so the clock goes to
+     * the photo instead: it tries positions left to right (not over the widgets), a little lower, and a
+     * little smaller or bigger, and picks the one where the subject overlaps the bottom of the digits
+     * while every digit stays readable (top half almost clear, no digit more than 40% hidden, ideally
+     * about 18% of the ink behind the subject). Nothing fits: centred clock, no depth (as iOS).
+     */
+    private fun decideDepth(tries: Int = 0) {
+        if (!depthView.hasMask) return
+        if ((clockText.height == 0 || widgetsView.width == 0 || dockFrame.height == 0) && tries < 20) {
+            clockText.postDelayed({ decideDepth(tries + 1) }, 100); return
+        }
+        val samples = clockText.inkSamples()
+        val half00 = clockText.baseWidth("00:00") / 2f
+        val loc = IntArray(2); clockText.getLocationInWindow(loc)
+        val viewTop = loc[1] - clockLayer.translationY
+        val sw = root.width.toFloat().takeIf { it > 0 } ?: screenW.toFloat()
+        var right = sw - X(80f)
+        if (widgetsView.visibility == View.VISIBLE && widgetsView.width > 0) {
+            val wl = IntArray(2); widgetsView.getLocationInWindow(wl); right = minOf(right, wl[0] - X(40f))
+        }
+        val left = X(60f)
+        val dl = IntArray(2); dockFrame.getLocationInWindow(dl)
+        val bottomLimit = (if (dockFrame.height > 0) dl[1].toFloat() else screenH * 0.78f) - Y(60f)
+        val baseH = clockText.baseDigitsHeight
+        Thread {
+            var best: FloatArray? = null; var bestScore = -1e9f
+            for (s in floatArrayOf(1f, 0.9f, 1.1f, 0.8f, 0.75f)) {
+                val half = half00 * s
+                var dy = 0f
+                while (dy <= Y(200f)) {
+                    val top = viewTop + clockText.digitTopOffset(s) + dy
+                    if (top + baseH * s > bottomLimit) break
+                    var cx = left + half
+                    while (cx <= right - half) {
+                        val fit = depthFit(samples, cx, top, s)
+                        if (fit >= 0f) {
+                            val score = -Math.abs(fit - 0.18f) * 3f - Math.abs(cx - sw / 2f) / (sw / 2f) * 0.8f -
+                                dy / Y(200f) * 0.3f - Math.abs(s - 1f) * 0.6f
+                            if (score > bestScore) { bestScore = score; best = floatArrayOf(cx, dy, s, fit) }
+                        }
+                        cx += X(20f)
+                    }
+                    dy += Y(20f)
+                }
+            }
+            runOnUiThread { applyDepthPlacement(best, sw) }
+        }.start()
+    }
+
+    /** Share of the digits' ink the subject covers at this placement, or -1 if a digit would be hard to read. */
+    private fun depthFit(samples: List<Triple<FloatArray, FloatArray, BooleanArray>>, cx: Float, top: Float, s: Float): Float {
+        var tot = 0; var hit = 0
+        for ((xs, ys, tops) in samples) {
+            var n = 0; var h = 0; var tn = 0; var th = 0
+            for (i in xs.indices) {
+                val on = depthView.hitAt((cx + xs[i] * s).toInt(), (top + ys[i] * s).toInt())
+                n++; if (on) h++
+                if (tops[i]) { tn++; if (on) th++ }
+            }
+            if (n == 0) continue
+            if (tn > 0 && th > tn * 0.05f) return -1f
+            if (h > n * 0.40f) return -1f
+            tot += n; hit += h
+        }
+        if (tot == 0) return -1f
+        val cov = hit.toFloat() / tot
+        return if (cov < 0.04f) -1f else cov
+    }
+
+    private fun applyDepthPlacement(p: FloatArray?, sw: Float) {
+        if (p == null) {
+            android.util.Log.d("Vitrine", "depth: no readable spot for the clock -> off")
+            clockText.scale = 1f
+            clockLayer.animate().translationX(0f).translationY(0f).setDuration(300).start()
+            depthView.visibility = View.GONE
+            return
+        }
+        android.util.Log.d("Vitrine", "depth: clock at x=%.0f drop=%.0f size=%.2f, %.0f%% of its ink behind the subject".format(p[0], p[1], p[2], p[3] * 100))
+        clockText.scale = p[2]
+        depthView.visibility = View.VISIBLE
+        val first = clockLayer.translationX == 0f && clockLayer.translationY == 0f
+        clockLayer.animate().translationX(p[0] - sw / 2f).translationY(p[1]).setDuration(if (first) 0L else 600L).start()
+        if (clockText.onTimeChanged == null) clockText.onTimeChanged = { recheckDepth() }
+    }
+
+    /** New minute: keep the spot if the new digits are still readable there, otherwise find a new one. */
+    private fun recheckDepth() {
+        if (!depthView.hasMask || depthView.visibility != View.VISIBLE) return
+        val loc = IntArray(2); clockText.getLocationInWindow(loc)
+        val sw = root.width.toFloat()
+        val cx = sw / 2f + clockLayer.translationX
+        val top = loc[1] + clockText.digitTopOffset(clockText.scale)
+        if (depthFit(clockText.inkSamples(), cx, top, clockText.scale) < 0f) decideDepth()
+    }
+
+    /** Lines from res/raw/quotes.txt, or from files/quotes.txt on the TV if one was pushed there. */
+    private fun loadQuotes(): List<QuoteView.Quote> {
+        val text = try {
+            val own = File(getExternalFilesDir(null), "quotes.txt")
+            if (own.exists()) own.readText() else resources.openRawResource(R.raw.quotes).bufferedReader().use { it.readText() }
+        } catch (_: Exception) { "" }
+        return text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
+            .mapNotNull { ln -> val p = ln.split("|").map { it.trim() }; if (p[0].isEmpty()) null else QuoteView.Quote(p[0], p.getOrElse(1) { "" }, p.getOrElse(2) { "" }) }
+            .toList()
+    }
+
+    // ---------- the player above the dock: last played, play from anywhere ----------
+
+    private var lastArtKey = ""
+
+    /** Saves what is playing, so the player can show it (and resume it) after the app or the TV restarts. */
+    private fun rememberLastPlayed(pkg: String, title: String, artist: String, art: Bitmap?) {
+        if (title.isEmpty()) return
+        prefs.edit().putString("np_pkg", pkg).putString("np_title", title).putString("np_artist", artist).apply()
+        val key = "$pkg|$title|$artist"
+        if (art != null && key != lastArtKey && !art.isRecycled) {
+            lastArtKey = key
+            val small = try { Bitmap.createScaledBitmap(art, 160, 160 * art.height / maxOf(1, art.width), true) } catch (_: Exception) { null }
+            if (small != null) Thread {
+                try { File(filesDir, "now_art.png").outputStream().use { small.compress(Bitmap.CompressFormat.PNG, 100, it) } } catch (_: Exception) {}
+            }.start()
+        } else if (art == null && key != lastArtKey) { lastArtKey = key; File(filesDir, "now_art.png").delete() }
+    }
+
+    /** The installed music app the player and search use: Spotify if it's there, else YouTube Music. */
+    private fun musicApp(): String {
+        for (p in arrayOf(SPOTIFY, YT_MUSIC)) try { packageManager.getApplicationInfo(p, 0); return p } catch (_: Exception) {}
+        return YT_MUSIC
+    }
+
+    /** Nothing playing: the last thing played, paused. Nothing ever played: the music app, ready to play. */
+    private fun showLastPlayed() {
+        if (!::nowChip.isInitialized) return
+        val title = prefs.getString("np_title", null)
+        if (title == null) {
+            val label = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(musicApp(), 0)).toString() } catch (_: Exception) { "Music" }
+            nowChip.set(label, "Press OK to play · hold OK to search", false, null); return
+        }
+        val f = File(filesDir, "now_art.png")
+        val art = if (f.exists()) try { BitmapFactory.decodeFile(f.path) } catch (_: Exception) { null } else null
+        nowChip.set(title, prefs.getString("np_artist", "") ?: "", false, art)
+    }
+
+    private fun musicPlaying(): Boolean =
+        controller?.playbackState?.state == PlaybackState.STATE_PLAYING ||
+            (getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager).isMusicActive
+
+    /**
+     * Play/pause. With a live session: pause or play it. Without one (the app closed), resume the last
+     * player in the background, as a Bluetooth headset's play button does: a Play key through the
+     * system, then straight to that app, then (if still silent) open the app.
+     */
+    private fun playPause() {
+        val c = controller
+        val st = c?.playbackState?.state
+        if (c != null && (st == PlaybackState.STATE_PLAYING || st == PlaybackState.STATE_PAUSED)) {
+            if (st == PlaybackState.STATE_PLAYING) c.transportControls.pause() else c.transportControls.play()
+            return
+        }
+        val pkg = prefs.getString("np_pkg", null) ?: musicApp()
+        sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+        ui.postDelayed({
+            if (musicPlaying()) return@postDelayed
+            for (action in intArrayOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) try {
+                sendBroadcast(Intent(Intent.ACTION_MEDIA_BUTTON).setPackage(pkg)
+                    .putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(action, KeyEvent.KEYCODE_MEDIA_PLAY)))
+            } catch (_: Exception) {}
+            ui.postDelayed({
+                if (musicPlaying()) return@postDelayed
+                val open = packageManager.getLeanbackLaunchIntentForPackage(pkg) ?: packageManager.getLaunchIntentForPackage(pkg)
+                if (open != null) safeStart(open)
+            }, 2500)
+        }, 1500)
+    }
+
+    /** A media key through the system: it goes to the active player, or the one that played last. */
+    private fun sendMediaKey(code: Int) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val t = SystemClock.uptimeMillis()
+        try {
+            am.dispatchMediaKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0))
+            am.dispatchMediaKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_UP, code, 0))
+        } catch (_: Exception) {}
+    }
+
+    /** Previous (-1) or next (1) track: through the live session, else the last player via media keys. */
+    private fun skipTrack(d: Int) {
+        val t = controller?.transportControls
+        if (t != null) { if (d > 0) t.skipToNext() else t.skipToPrevious(); return }
+        sendMediaKey(if (d > 0) KeyEvent.KEYCODE_MEDIA_NEXT else KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+    }
+
+    // ---------- song search (hold OK on the player for 2 s) ----------
+
+    /**
+     * Spotify-style search panel. Top: a search pill (magnifier, text, mic). Empty: recent searches.
+     * Typing: "Top result" (big artwork) on the left, "Songs" (up to five, with length) on the right,
+     * refreshed as you type. Picking a song plays it in the music app and the panel closes.
+     */
+    private fun showMusicSearch() {
+        val dim = FrameLayout(this).apply { setBackgroundColor(Color.argb(170, 0, 0, 0)); isClickable = true }
+        val panel = FrameLayout(this).apply { clipChildren = false; clipToPadding = false }
+        panel.addView(GlassView(this, glass).apply {
+            isFocusable = false; isClickable = false; isLongClickable = false; lens = true
+            radius = Y(40f); rest = Theme.card(Color.argb(95, 20, 20, 24))
+        }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false
+            setPadding(X(36f).toInt(), Y(30f).toInt(), X(36f).toInt(), Y(30f).toInt())
+        }
+        val appName = try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(musicApp(), 0)).toString() } catch (_: Exception) { "music" }
+        col.addView(TextView(this).apply {
+            text = "Search"; setTextColor(Theme.ink); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(40f))
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setPadding(X(6f).toInt(), 0, 0, Y(18f).toInt())
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val fieldBox = FrameLayout(this)
+        val fieldGlass = GlassView(this, glass).apply {
+            isFocusable = false; isClickable = false; isLongClickable = false; lens = false
+            radius = Y(38f); rest = Theme.row()
+        }
+        fieldBox.addView(fieldGlass, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        fieldBox.addView(SearchGlyph(this), FrameLayout.LayoutParams(Y(76f).toInt(), Y(76f).toInt(), Gravity.START or Gravity.CENTER_VERTICAL).apply {
+            marginStart = X(10f).toInt()
+        })
+        val field = EditText(this).apply {
+            hint = "What do you want to listen to? ($appName)"
+            setTextColor(Theme.ink); setHintTextColor(Theme.ink(140)); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(32f))
+            background = null; isSingleLine = true
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            setPadding(X(84f).toInt(), 0, X(30f).toInt(), 0)
+            onFocusChangeListener = View.OnFocusChangeListener { _, f -> fieldGlass.lit = f }
+        }
+        searchField = field
+        fieldBox.addView(field, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        row.addView(fieldBox, LinearLayout.LayoutParams(0, Y(76f).toInt(), 1f))
+        val voice = Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Say a song or an artist")
+        if (packageManager.resolveActivity(voice, 0) != null) {
+            val mic = MicButton(this, glass).apply {
+                focus = this@MainActivity.focus
+                setOnClickListener { try { startActivityForResult(voice, REQ_VOICE) } catch (_: Exception) {} }
+            }
+            row.addView(mic, LinearLayout.LayoutParams(Y(76f).toInt(), Y(76f).toInt()).apply { marginStart = X(18f).toInt() })
+        }
+        col.addView(row)
+        val status = TextView(this).apply {
+            setTextColor(Theme.ink(150)); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(22f))
+            setPadding(X(8f).toInt(), Y(22f).toInt(), 0, Y(10f).toInt())
+        }
+        col.addView(status)
+        val body = FrameLayout(this).apply { clipChildren = false; clipToPadding = false }
+        col.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Y(500f).toInt()))
+        panel.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        dim.addView(panel, FrameLayout.LayoutParams(X(1260f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL or Gravity.TOP).apply {
+            topMargin = Y(80f).toInt()
+        })
+
+        fun pick(song: Song, art: Bitmap?) {
+            rememberSearch(field.text.toString())
+            closeOverlay(true); searchField = null
+            playSong(song, art)
+        }
+        fun showRecent() {
+            body.removeAllViews()
+            val recent = (prefs.getString("recent_q", "") ?: "").split("\n").filter { it.isNotBlank() }
+            status.text = if (recent.isEmpty()) "Type or say a song, then pick it" else "Recent searches"
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+            for (q in recent.take(6)) {
+                list.addView(MenuRow(this, glass, "↺   " + q, Y(28f)).apply {
+                    radius = Y(22f); focus = Theme.row()
+                    setOnClickListener { field.setText(q); field.setSelection(q.length) }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Y(70f).toInt()))
+            }
+            body.addView(list, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        fun runSearch(q: String) {
+            val seq = ++searchSeq
+            if (q.trim().length < 2) { showRecent(); return }
+            status.text = "Searching…"
+            suggestPool.execute {
+                val list = try { SongSuggest.search(q, limit = 8) } catch (_: Exception) { null }
+                ui.post {
+                    if (seq != searchSeq || overlay !== dim) return@post
+                    body.removeAllViews()
+                    when {
+                        list == null -> status.text = "Couldn't search. Is the TV online?"
+                        list.isEmpty() -> status.text = "No songs found for “$q”"
+                        else -> {
+                            status.text = ""
+                            val h = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; clipChildren = false; clipToPadding = false }
+                            val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+                            left.addView(sectionLabel("Top result"))
+                            val top = TopResultCard(this, glass, list[0], Y(28f)).apply {
+                                radius = Y(26f); rest = Theme.card(Color.argb(60, 255, 255, 255)); focus = Theme.row()
+                                setOnClickListener { pick(song, art) }
+                            }
+                            left.addView(top, LinearLayout.LayoutParams(X(400f).toInt(), Y(440f).toInt()))
+                            h.addView(left, LinearLayout.LayoutParams(X(400f).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT))
+                            val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false; clipToPadding = false }
+                            right.addView(sectionLabel("Songs"))
+                            val rows = ArrayList<SongRow>()
+                            for (song in list.drop(1).take(5)) {
+                                val r = SongRow(this, glass, song, Y(27f)).apply {
+                                    radius = Y(20f); focus = Theme.row()
+                                    setOnClickListener { pick(song, art) }
+                                }
+                                rows += r
+                                right.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Y(86f).toInt()))
+                            }
+                            h.addView(right, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = X(28f).toInt() })
+                            body.addView(h, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                            list[0].artUrl?.let { u -> suggestPool.execute { val b = SongSuggest.art(u); ui.post { if (b != null) top.art = b } } }
+                            for (r in rows) r.song.artUrl?.let { u -> suggestPool.execute { val b = SongSuggest.art(u); ui.post { if (b != null) r.art = b } } }
+                        }
+                    }
+                }
+            }
+        }
+        val debounce = Runnable { runSearch(field.text.toString()) }
+        field.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { ui.removeCallbacks(debounce); ui.postDelayed(debounce, 350) }
+        })
+        field.setOnEditorActionListener { _, _, _ ->
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(field.windowToken, 0)
+            ui.removeCallbacks(debounce); runSearch(field.text.toString())
+            body.postDelayed({ (body.getChildAt(0) as? ViewGroup)?.let { firstFocusable(it)?.requestFocus() } }, 900)
+            true
+        }
+        showRecent()
+        openOverlay(dim, field)
+        field.postDelayed({
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).showSoftInput(field, 0)
+        }, 250)
+    }
+
+    private fun sectionLabel(t: String) = TextView(this).apply {
+        text = t; setTextColor(Theme.ink); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(28f))
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        setPadding(X(6f).toInt(), 0, 0, Y(14f).toInt())
+    }
+
+    private fun firstFocusable(g: ViewGroup): View? {
+        for (i in 0 until g.childCount) {
+            val c = g.getChildAt(i)
+            if (c.isFocusable && c.visibility == View.VISIBLE) return c
+            if (c is ViewGroup) firstFocusable(c)?.let { return it }
+        }
+        return null
+    }
+
+    private fun rememberSearch(q: String) {
+        val t = q.trim(); if (t.length < 2) return
+        val old = (prefs.getString("recent_q", "") ?: "").split("\n").filter { it.isNotBlank() && !it.equals(t, true) }
+        prefs.edit().putString("recent_q", (listOf(t) + old).take(6).joinToString("\n")).apply()
+    }
+
+    @Deprecated("Activity result for the voice search")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_VOICE && resultCode == RESULT_OK) {
+            val said = data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return
+            searchField?.let { f -> f.setText(said); f.setSelection(said.length) }
+        }
+    }
+
+    /** The music app's session, even when it is paused or stopped. */
+    private fun musicController(pkg: String): MediaController? = try {
+        getSystemService(MediaSessionManager::class.java)
+            ?.getActiveSessions(ComponentName(this, MediaListener::class.java))
+            ?.firstOrNull { it.packageName == pkg }
+    } catch (_: Exception) { null }
+
+    private fun norm(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+
+    /** True once the music app reports the picked song as the current track. */
+    private fun nowPlayingIs(song: Song, pkg: String): Boolean {
+        val t = musicController(pkg)?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: return false
+        val a = norm(t); val b = norm(song.title)
+        if (a.isEmpty() || b.isEmpty()) return false
+        val n = minOf(10, a.length, b.length)
+        return a.take(n) == b.take(n)
+    }
+
+    /**
+     * Plays the picked song. First its exact link in the music app is looked up (song.link). Then:
+     *  1. the app's own session, if it accepts a track to play (by link or id) or a search: no app screen;
+     *  2. otherwise the track is opened in the app, and Home comes back as soon as the new song plays.
+     */
+    private fun playSong(song: Song, art: Bitmap?) {
+        val pkg = musicApp()
+        nowChip.set(song.title, "Starting…", false, art)
+        suggestPool.execute {
+            val link = song.trackUrl?.let { SongSuggest.linkFor(it, if (pkg == SPOTIFY) "spotify" else "youtubeMusic") }
+            val uri = when {
+                link == null -> null
+                pkg == SPOTIFY -> Regex("open\\.spotify\\.com/track/([A-Za-z0-9]+)").find(link)?.groupValues?.get(1)?.let { "spotify:track:$it" }
+                else -> link
+            }
+            ui.post { startOnMusicApp(song, uri, pkg) }
+        }
+    }
+
+    private fun startOnMusicApp(song: Song, uri: String?, pkg: String) {
+        val q = song.title + " " + song.artist
+        val c = musicController(pkg)
+        val acts = c?.playbackState?.actions ?: 0L
+        android.util.Log.d("Vitrine", "search: “$q” in $pkg link=${uri ?: "none"} session=${c != null} actions=0x${java.lang.Long.toHexString(acts)}")
+        val t = c?.transportControls
+        val tried = when {
+            t != null && uri != null && acts and PlaybackState.ACTION_PLAY_FROM_URI != 0L -> { t.playFromUri(Uri.parse(uri), Bundle()); "uri" }
+            t != null && uri != null && pkg == SPOTIFY && acts and PlaybackState.ACTION_PLAY_FROM_MEDIA_ID != 0L -> { t.playFromMediaId(uri, Bundle()); "media id" }
+            t != null && acts and PlaybackState.ACTION_PLAY_FROM_SEARCH != 0L -> {
+                t.playFromSearch(q, Bundle().apply {
+                    putString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/audio")
+                    putString(android.provider.MediaStore.EXTRA_MEDIA_TITLE, song.title)
+                    putString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST, song.artist)
+                }); "search"
+            }
+            else -> null
+        }
+        if (tried == null) { openInMusicApp(song, uri, pkg); return }
+        ui.postDelayed({ if (!nowPlayingIs(song, pkg)) openInMusicApp(song, uri, pkg) }, 3500)
+    }
+
+    private fun openInMusicApp(song: Song, uri: String?, pkg: String) {
+        val q = song.title + " " + song.artist
+        val byLink = uri?.let { Intent(Intent.ACTION_VIEW, Uri.parse(it)).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        val bySearch = Intent(android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).setPackage(pkg)
+            .putExtra(android.app.SearchManager.QUERY, q)
+            .putExtra(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/audio")
+            .putExtra(android.provider.MediaStore.EXTRA_MEDIA_TITLE, song.title)
+            .putExtra(android.provider.MediaStore.EXTRA_MEDIA_ARTIST, song.artist)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val opened = (byLink != null && safeStart(byLink)) || safeStart(bySearch)
+        android.util.Log.d("Vitrine", "search: opened $pkg ${if (byLink != null) "with the track link" else "with a search"}: $opened")
+        if (!opened) { showLastPlayed(); return }
+        var left = 20
+        val back = object : Runnable {
+            override fun run() {
+                if (nowPlayingIs(song, pkg) && musicPlaying()) {
+                    startActivity(Intent(this@MainActivity, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                } else if (--left > 0) ui.postDelayed(this, 1000)
+            }
+        }
+        ui.postDelayed(back, 1500)
     }
 
     // ---------- Continue watching (Android TV "Watch next") ----------
@@ -521,7 +1153,7 @@ class MainActivity : Activity() {
     }
 
     private fun loadCachedWeather() {
-        prefs.getString("wx_json", null)?.let { try { weatherCard.weather = parseWeather(JSONObject(it)) } catch (_: Exception) {} }
+        prefs.getString("wx_json", null)?.let { try { showWeather(parseWeather(JSONObject(it))) } catch (_: Exception) {} }
         prefs.getString("aq_json", null)?.let { applyAir(it) }
     }
 
@@ -563,7 +1195,7 @@ class MainActivity : Activity() {
                 c.disconnect()
                 val w = parseWeather(JSONObject(body))
                 prefs.edit().putString("wx_json", body).putLong("wx_at", System.currentTimeMillis()).apply()
-                runOnUiThread { weatherCard.weather = w; weatherCard.visibility = View.VISIBLE }
+                runOnUiThread { showWeather(w); weatherCard.visibility = View.VISIBLE }
             } catch (_: Exception) { /* offline: keep the last forecast */ }
         }.start()
     }
@@ -698,6 +1330,7 @@ class MainActivity : Activity() {
         if (open) {
             dockLayer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
             headerView.animate().alpha(0f).setDuration(200).start()
+            clockLayer.animate().alpha(0f).setDuration(200).start(); depthView.animate().alpha(0f).setDuration(200).start()
             dockLayer.animate().alpha(0f).translationY(-Y(30f)).setDuration(220).start()
             wheel.reset()
             gridLayer.visibility = View.VISIBLE; gridLayer.alpha = 0f; wheel.translationY = rise
@@ -707,6 +1340,7 @@ class MainActivity : Activity() {
         } else {
             dockLayer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
             headerView.animate().alpha(1f).setDuration(240).start()
+            clockLayer.animate().alpha(1f).setDuration(240).start(); depthView.animate().alpha(1f).setDuration(240).start()
             dockLayer.animate().alpha(1f).translationY(0f).setDuration(240).start()
             wheel.animate().translationY(rise).setDuration(220).start()
             gridLayer.animate().alpha(0f).setDuration(200).withEndAction { if (!gridOpen) gridLayer.visibility = View.GONE }.start()
@@ -787,6 +1421,10 @@ class MainActivity : Activity() {
         (nowBar.layoutParams as FrameLayout.LayoutParams).let { nb ->
             val m = g.bottom + g.frameH + Y(26f).toInt()
             if (nb.bottomMargin != m) nowBar.layoutParams = nb.apply { bottomMargin = m }
+            (nowChip.layoutParams as FrameLayout.LayoutParams).let { nc ->
+                val m2 = g.bottom + g.frameH + Y(20f).toInt()
+                if (nc.bottomMargin != m2) nowChip.layoutParams = nc.apply { bottomMargin = m2 }
+            }
         }
         applyDockStyle()
         if (list.isEmpty()) dockFrame.visibility = View.INVISIBLE
@@ -905,32 +1543,11 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP
             clipChildren = false; clipToPadding = false
         }
-        val time = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = true }
-        time.addView(TextClock(this).apply {
-            format12Hour = "h:mm"; format24Hour = "H:mm"
-            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(54f))
-            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-            setShadowLayer(8f, 0f, 1f, Color.argb(90, 0, 0, 0)); includeFontPadding = false
-        })
-        time.addView(TextClock(this).apply {
-            format12Hour = "EEE d MMM"; format24Hour = "EEE d MMM"
-            isSingleLine = true; maxLines = 1
-            setTextColor(Color.argb(200, 255, 255, 255)); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(24f))
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            setShadowLayer(6f, 0f, 1f, Color.argb(90, 0, 0, 0)); includeFontPadding = false
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = X(22f).toInt() })
-        greeting = TextView(this).apply {
-            setTextColor(Color.argb(215, 255, 255, 255)); setTextSize(TypedValue.COMPLEX_UNIT_PX, Y(28f))
-            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-            setShadowLayer(6f, 0f, 1f, Color.argb(90, 0, 0, 0)); includeFontPadding = false
-        }
-        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        // WRAP_CONTENT, not the default MATCH_PARENT: otherwise the row is clamped to the greeting's width and the date gets cut.
-        left.addView(time, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        left.addView(greeting, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = Y(12f).toInt() })
-        updateGreeting()
-        row.addView(left)
         row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        addStat(row, StatPill.RAM, "0.0 / 0.0 GB")
+        addStat(row, StatPill.STORAGE, "00.0 / 00 GB")
+        refreshStats()
+        addChip(row, GlassIconButton.CLEAN) { freeMemory() }
         addChip(row, GlassIconButton.THEME) { toggleTheme() }
         addChip(row, GlassIconButton.INPUTS) { showInputs() }
         addChip(row, GlassIconButton.WIFI) { openSettings(Settings.ACTION_WIFI_SETTINGS) }
@@ -1263,7 +1880,7 @@ class MainActivity : Activity() {
     private fun poke() {
         ui.removeCallbacks(quietRunnable)
         if (quiet) setQuiet(false)
-        if (resumedNow) ui.postDelayed(quietRunnable, 20_000L)
+        // No idle fade: Home stays as it is; the screensaver takes over after 10 minutes.
     }
 
     /** Idle: only the photo, the clock and a dimmed dock remain. */
@@ -1272,7 +1889,7 @@ class MainActivity : Activity() {
         if (q == quiet) return
         quiet = q
         val d = if (q) 1200L else 260L
-        val fades = ArrayList<View>(chips); fades.add(widgetsView); fades.add(hintView); fades.add(greeting)
+        val fades = ArrayList<View>(chips); fades.add(widgetsView); fades.add(hintView); fades.add(greeting); fades.add(quoteView)
         for (v in fades) v.animate().alpha(if (q) 0f else 1f).setStartDelay(0).setDuration(d).start()
         if (dockFrame.visibility == View.VISIBLE) dockFrame.animate().alpha(if (q) 0.35f else 1f).setStartDelay(0).setDuration(d).start()
         if (nowBar.visibility == View.VISIBLE) nowBar.animate().alpha(if (q) 0.6f else 1f).setStartDelay(0).setDuration(d).start()
@@ -1283,12 +1900,13 @@ class MainActivity : Activity() {
         quiet = false
         for (v in chips) { v.animate().cancel(); v.alpha = 1f }
         greeting.alpha = 1f
+        quoteView.animate().cancel(); quoteView.alpha = 1f
         (hintView as? HintView)?.replay()
         if (reduceMotion || safeMode) {
-            for (v in listOf(headerView, widgetsView, nowBar, dockFrame, hintView)) { v.animate().cancel(); v.translationY = 0f; if (v.visibility == View.VISIBLE) v.alpha = 1f }
+            for (v in listOf(headerView, widgetsView, nowBar, nowChip, dockFrame, hintView)) { v.animate().cancel(); v.translationY = 0f; if (v.visibility == View.VISIBLE) v.alpha = 1f }
             return
         }
-        val seq = listOf(headerView, widgetsView, nowBar, dockFrame, hintView)
+        val seq = listOf(headerView, widgetsView, nowBar, nowChip, dockFrame, hintView)
         var i = 0
         for (v in seq) {
             if (v.visibility != View.VISIBLE) continue
@@ -1301,6 +1919,7 @@ class MainActivity : Activity() {
     }
 
     private fun showNowBar(show: Boolean) {
+        if (show) return            // the player above the dock shows what's playing; no extra pill
         if (safeMode && show) return
         val visible = nowBar.visibility == View.VISIBLE
         if (show && !visible) {
@@ -1746,6 +2365,7 @@ class MainActivity : Activity() {
         val files = wallpaperFiles()
         val want = prefs.getInt("wp_n", files.firstOrNull()?.first ?: 1)
         val chosen = files.firstOrNull { it.first == want } ?: files.firstOrNull()
+        wallFile = chosen?.second
         var src: Bitmap? = chosen?.let { decodeScaled(it.second.path, w, h) }
         if (src == null) {
             src = BitmapFactory.decodeResource(resources, R.drawable.wallpaper,
@@ -1763,6 +2383,9 @@ class MainActivity : Activity() {
     companion object {
         /** Common Live TV apps (AOSP Live Channels, Google's Live TV). Add yours in config.json. */
         private val LIVE_TV_APPS = listOf("com.google.android.tv", "com.android.tv")
+        private const val SPOTIFY = "com.spotify.tv.android"
+        private const val YT_MUSIC = "com.google.android.youtube.tvmusic"
+        private const val REQ_VOICE = 4711
         /** Where Android TV builds keep their Bluetooth icon (Settings first, then System UI). */
         private val BLUETOOTH_ICONS = listOf(
             "com.android.tv.settings" to "ic_bluetooth",

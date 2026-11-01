@@ -1,0 +1,33 @@
+# Famous lines shown bottom right of Home, in random order, a new one every 10 seconds.
+# Format: line | who said it | where
+# To use your own list without rebuilding, push a file in this same format to
+#   /sdcard/Android/data/app.vitrine.home/files/quotes.txt   (it replaces this one)
+We're thieves in a world that don't want us no more. | Arthur Morgan | Red Dead Redemption 2
+You don't get to live a bad life and have good things happen to you. | Arthur Morgan | Red Dead Redemption 2
+I gave you all I had. | Arthur Morgan | Red Dead Redemption 2
+I have a plan. | Dutch van der Linde | Red Dead Redemption 2
+No matter what, you keep finding something to fight for. | Joel | The Last of Us
+Endure and survive. | Ellie | The Last of Us
+When you're lost in the darkness, look for the light. | The Fireflies | The Last of Us
+If somehow the Lord gave me a second chance at that moment, I would do it all over again. | Joel | The Last of Us Part II
+I don't think I can ever forgive you for that. But I would like to try. | Ellie | The Last of Us Part II
+Sic parvis magna. Greatness from small beginnings. | Sir Francis Drake | Uncharted
+Oh, crap! | Nathan Drake | Uncharted
+Face it, genius. You've been played. | Harry Flynn | Uncharted 2: Among Thieves
+Compassion is the enemy. Mercy defeats us. | Zoran Lazarević | Uncharted 2: Among Thieves
+With great power comes great responsibility. | Uncle Ben | Spider-Man
+Anyone can wear the mask. | Miles Morales | Spider-Man: Into the Spider-Verse
+I am Iron Man. | Tony Stark | Iron Man
+Sometimes you gotta run before you can walk. | Tony Stark | Iron Man
+Genius, billionaire, playboy, philanthropist. | Tony Stark | The Avengers
+I love you 3000. | Tony Stark | Avengers: Endgame
+I am waiting. | Thalapathy Vijay | Thuppakki
+Oru thadava mudivu pannitta, en pecha naane kekka maatten. | Thalapathy Vijay | Pokkiri
+You forget a thousand things every day, pal. Make sure this is one of 'em. | Michael De Santa | Grand Theft Auto V
+I'm rich, I'm miserable. I'm pretty average for this country. | Michael De Santa | Grand Theft Auto V
+You took fifteen years from me, Sonny, and now I'm gonna make you pay! | Tommy Vercetti | GTA: Vice City
+He killed my brother. What do you expect me to do, mow his lawns? | Lance Vance | GTA: Vice City
+Where's everyone going? Bingo? | Leon S. Kennedy | Resident Evil 4
+Your right hand comes off? | Leon S. Kennedy | Resident Evil 4
+They were all dead. The final gunshot was an exclamation mark to everything that had led to this point. | Max Payne | Max Payne
+I don't know about angels, but it's fear that gives men wings. | Max Payne | Max Payne

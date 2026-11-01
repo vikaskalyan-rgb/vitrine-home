@@ -32,16 +32,21 @@ import java.io.FileOutputStream
  * little extra brightness), which is what makes glass read as clear rather than grey.
  * Also measures the wallpaper's average brightness so the UI can adapt its scrims and tints.
  */
-class GlassSource(screen: Bitmap, val factor: Int = 8) {
+/** [outW] x [outH]: the screen size the glass is sampled at (the wallpaper bitmap may be smaller, e.g. half size on 4K). */
+class GlassSource(screen: Bitmap, val factor: Int = 8, outW: Int = screen.width, outH: Int = screen.height) {
     val blurred: Bitmap
     /** Average luminance 0..1 of the wallpaper. */
     val luminance: Float
     /** Average luminance 0..1 of the top band (behind the clock and chips). */
     val topLuminance: Float
+    /** Two light colours from the photo's most prominent vivid hues, for the clock's colour blend:
+     *  the one found higher up in the photo, and the one lower down. Near-white on a grey photo. */
+    val paletteTop: Int
+    val paletteBottom: Int
 
     init {
-        val w = maxOf(1, screen.width / factor)
-        val h = maxOf(1, screen.height / factor)
+        val w = maxOf(1, outW / factor)
+        val h = maxOf(1, outH / factor)
         val small = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         Canvas(small).drawBitmap(screen, null, Rect(0, 0, w, h), Paint(Paint.FILTER_BITMAP_FLAG))
         val px = IntArray(w * h)
@@ -55,6 +60,8 @@ class GlassSource(screen: Bitmap, val factor: Int = 8) {
         }
         luminance = sum / px.size
         topLuminance = if (topN > 0) top / topN else luminance
+        val pal = palette(px, w, h)
+        paletteTop = pal.first; paletteBottom = pal.second
         val tmp = IntArray(w * h)
         repeat(3) { boxPass(px, tmp, w, h, 4, true); boxPass(tmp, px, w, h, 4, false) }
         small.setPixels(px, 0, w, 0, 0, w, h)
@@ -67,6 +74,43 @@ class GlassSource(screen: Bitmap, val factor: Int = 8) {
         blurred = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         Canvas(blurred).drawBitmap(small, 0f, 0f, Paint().apply { colorFilter = ColorMatrixColorFilter(vib) })
         small.recycle()
+    }
+
+    /** Hue histogram weighted by saturation and brightness; the two strongest hues at least 45 degrees apart. */
+    private fun palette(px: IntArray, w: Int, h: Int): Pair<Int, Int> {
+        val bins = FloatArray(24); val ysum = FloatArray(24); var wsum = 0f
+        val hsv = FloatArray(3)
+        for (i in px.indices) {
+            Color.colorToHSV(px[i], hsv)
+            if (hsv[2] <= 0.12f) continue
+            val wt = hsv[1] * hsv[1] * hsv[2]
+            val b = (hsv[0] / 15f).toInt().coerceIn(0, 23)
+            bins[b] += wt; ysum[b] += wt * (i / w).toFloat() / h; wsum += wt
+        }
+        val sm = FloatArray(24) { bins[(it + 23) % 24] + 2 * bins[it] + bins[(it + 1) % 24] }
+        var i1 = 0
+        for (i in 1 until 24) if (sm[i] > sm[i1]) i1 = i
+        val sm2 = sm.copyOf()
+        for (k in -3..3) sm2[(i1 + k + 24) % 24] = 0f
+        var i2 = 0
+        for (i in 1 until 24) if (sm2[i] > sm2[i2]) i2 = i
+        fun ymean(i: Int): Float {
+            var ws = 0f; var ys = 0f
+            for (k in -1..1) { ws += bins[(i + k + 24) % 24]; ys += ysum[(i + k + 24) % 24] }
+            return if (ws > 0f) ys / ws else 0.5f
+        }
+        val firstOnTop: Boolean
+        if (sm2[i2] < 0.25f * sm[i1]) { i2 = (i1 + 22) % 24; firstOnTop = true }   // one-colour photo: a warmer neighbour
+        else firstOnTop = ymean(i1) <= ymean(i2)
+        val colourful = minOf(1f, Math.sqrt((wsum / px.size).toDouble()).toFloat() * 2.2f)
+        val sat = minOf(0.55f, 0.12f + colourful * 0.6f)
+        fun col(i: Int): Int {
+            var hue = i * 15f + 7.5f
+            if (hue > 45f && hue < 100f) hue = 45f          // no lime: yellow-greens become gold
+            return Color.HSVToColor(floatArrayOf(hue, sat, 1f))
+        }
+        val a = col(i1); val b = col(i2)
+        return if (firstOnTop) a to b else b to a
     }
 
     private fun boxPass(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int, horizontal: Boolean) {
@@ -629,6 +673,17 @@ class GlassIconButton(context: Context, source: GlassSource, private val glyph: 
                     canvas.drawPath(path, gp)
                 }
             }
+            CLEAN -> { // sparkles: free up memory
+                fun star(x: Float, y: Float, rr: Float) {
+                    path.reset()
+                    path.moveTo(x, y - rr)
+                    path.quadTo(x, y, x + rr, y); path.quadTo(x, y, x, y + rr)
+                    path.quadTo(x, y, x - rr, y); path.quadTo(x, y, x, y - rr)
+                    path.close(); canvas.drawPath(path, gp)
+                }
+                star(cx - s * 0.25f, cy + s * 0.15f, s * 0.95f)
+                star(cx + s * 0.8f, cy - s * 0.75f, s * 0.42f)
+            }
             INPUTS -> {
                 r.set(cx - s * 1.25f, cy - s * 0.95f, cx + s * 1.25f, cy + s * 0.65f)
                 canvas.drawRoundRect(r, s * 0.25f, s * 0.25f, gp)
@@ -651,7 +706,7 @@ class GlassIconButton(context: Context, source: GlassSource, private val glyph: 
         }
     }
 
-    companion object { const val PICTURE = 0; const val INPUTS = 1; const val SETTINGS = 2; const val WIFI = 3; const val DEVICES = 4; const val THEME = 5 }
+    companion object { const val PICTURE = 0; const val INPUTS = 1; const val SETTINGS = 2; const val WIFI = 3; const val DEVICES = 4; const val THEME = 5; const val CLEAN = 6 }
 }
 
 /** Dock entry: glyph and name; the gliding bubble behind it is the glass. */

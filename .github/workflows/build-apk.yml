@@ -16,8 +16,20 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Same signing key every build (so a new APK installs over the old one)
+        run: mkdir -p ~/.android && cp ci/debug.keystore ~/.android/debug.keystore
       - name: Build
-        run: chmod +x gradlew && ./gradlew --no-daemon assembleDebug
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew --no-daemon assembleDebug 2>&1 | tee /tmp/build.log
+      - name: On failure, publish the build log to the build-logs branch
+        if: failure()
+        run: |
+          git config user.name "Vitrine Home CI"; git config user.email "noreply@users.noreply.github.com"
+          cp /tmp/build.log /tmp/keep.log || true
+          git checkout --orphan build-logs && git rm -rf --quiet . && cp /tmp/keep.log build.log
+          git add build.log && git commit -m "Failed build of ${GITHUB_SHA::7}" && git push -f origin build-logs
       - name: Publish to the apk-builds branch
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/vitrine-home.apk
