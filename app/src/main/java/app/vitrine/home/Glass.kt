@@ -684,6 +684,11 @@ class GlassIconButton(context: Context, source: GlassSource, private val glyph: 
                 star(cx - s * 0.25f, cy + s * 0.15f, s * 0.95f)
                 star(cx + s * 0.8f, cy - s * 0.75f, s * 0.42f)
             }
+            SLEEP -> { // power symbol: put the TV to sleep, the remote's power button wakes it in a second
+                r.set(cx - s * 0.95f, cy - s * 0.85f, cx + s * 0.95f, cy + s * 1.05f)
+                canvas.drawArc(r, -60f, 300f, false, gp)
+                canvas.drawLine(cx, cy - s * 1.15f, cx, cy + s * 0.05f, gp)
+            }
             INPUTS -> {
                 r.set(cx - s * 1.25f, cy - s * 0.95f, cx + s * 1.25f, cy + s * 0.65f)
                 canvas.drawRoundRect(r, s * 0.25f, s * 0.25f, gp)
@@ -706,7 +711,7 @@ class GlassIconButton(context: Context, source: GlassSource, private val glyph: 
         }
     }
 
-    companion object { const val PICTURE = 0; const val INPUTS = 1; const val SETTINGS = 2; const val WIFI = 3; const val DEVICES = 4; const val THEME = 5; const val CLEAN = 6 }
+    companion object { const val PICTURE = 0; const val INPUTS = 1; const val SETTINGS = 2; const val WIFI = 3; const val DEVICES = 4; const val THEME = 5; const val CLEAN = 6; const val SLEEP = 7 }
 }
 
 /** Dock entry: glyph and name; the gliding bubble behind it is the glass. */

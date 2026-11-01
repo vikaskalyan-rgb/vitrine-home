@@ -592,6 +592,23 @@ class MainActivity : Activity() {
      * Never touched: this home screen itself, whatever is playing, the keyboard, accessibility services,
      * System UI and TV Settings.
      */
+    /**
+     * The power button in the header. Some TVs (Xiaomi's Mi TV 4 series) wire the remote's power button to a full
+     * shutdown, so every switch-on is a cold boot with the logo animations. Sleeping instead keeps the TV running
+     * with the screen off; the remote's power button then wakes it in about a second, straight to this home screen.
+     * Uses Android's "lock now" device-admin call, which on a TV turns the screen off. The admin is switched on once
+     * over adb (dpm set-active-admin), since a TV has no screen to approve it on.
+     */
+    private fun sleepTv() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+        val admin = android.content.ComponentName(this, SleepAdmin::class.java)
+        if (dpm.isAdminActive(admin)) {
+            try { dpm.lockNow(); return } catch (_: Exception) {}
+        }
+        android.widget.Toast.makeText(this, "Sleep isn't set up on this TV yet - run the Glass Home setup script once.",
+            android.widget.Toast.LENGTH_LONG).show()
+    }
+
     private fun freeMemory() {
         val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val mi0 = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi0)
@@ -1555,6 +1572,7 @@ class MainActivity : Activity() {
             ?.systemIcon = systemDrawable(BLUETOOTH_ICONS)
         addChip(row, GlassIconButton.SETTINGS) { showSettings() }
             ?.apply { isLongClickable = true; setOnLongClickListener { showWallpapers(); true } }
+        addChip(row, GlassIconButton.SLEEP) { sleepTv() }
         return row
     }
 

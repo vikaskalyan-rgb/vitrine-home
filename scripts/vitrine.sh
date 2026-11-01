@@ -39,6 +39,7 @@ case "$cmd" in
       a shell pm grant $PKG $p 2>/dev/null || true
     done
     a shell cmd notification allow_listener $PKG/$PKG.MediaListener 2>/dev/null || true
+    a shell dpm set-active-admin --user 0 $PKG/.SleepAdmin >/dev/null 2>&1 || true
     a shell cmd package compile -m speed -f $PKG >/dev/null 2>&1 || true
     restart
     echo "Installed. It opens now as a preview; run 'home' to make it your home screen." ;;

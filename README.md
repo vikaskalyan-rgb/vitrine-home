@@ -44,7 +44,11 @@ the Android SDK.
   where that looks right while every digit stays readable.
 - **Player above the dock:** what's playing (or what played last), a wave that follows the music,
   previous / play-pause / next. Hold OK for 2 seconds to search for a song (Spotify or YouTube Music).
-- **Top bar:** RAM and storage in use, and a ✨ button that closes apps sitting in the background.
+- **Top bar:** RAM and storage in use, a ✨ button that closes apps sitting in the background, and a
+  power button that puts the TV to **sleep**. On TVs whose remote power button does a full shutdown
+  (Xiaomi Mi TV 4 series), sleeping instead means the remote's power button wakes it in about a second,
+  straight to Home, with no logo animations. The setup script switches this on (a one-line device-admin
+  grant: `dpm set-active-admin --user 0 app.vitrine.home/.SleepAdmin`).
 - **Quotes:** a famous game or film line, bottom right, a new one every 10 seconds
   (`app/src/main/res/raw/quotes.txt`, or push your own `quotes.txt` to the app's files folder).
 
