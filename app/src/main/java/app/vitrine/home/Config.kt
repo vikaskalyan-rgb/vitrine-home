@@ -22,6 +22,8 @@ import java.io.File
  *   hideApps        apps never shown (e.g. the TV's own launcher)
  *   homeApps        preinstalled apps that belong on Home rather than in More
  *   moreApps        apps that go in the More sheet
+ *   player          false = no music player above the dock
+ *   quotes          false = no quotes bottom right
  *
  * Push it with:  scripts/vitrine.sh config <tv-ip> config.json
  */
@@ -37,7 +39,9 @@ class Config(
     val appOrder: List<String> = emptyList(),
     val hideApps: Set<String> = emptySet(),
     val homeApps: Set<String> = emptySet(),
-    val moreApps: Set<String> = emptySet()
+    val moreApps: Set<String> = emptySet(),
+    val showPlayer: Boolean = true,
+    val showQuotes: Boolean = true
 ) {
     val hasLocation get() = latitude != null && longitude != null
 
@@ -65,7 +69,9 @@ class Config(
                     appOrder = list(o, "appOrder"),
                     hideApps = list(o, "hideApps").toSet(),
                     homeApps = list(o, "homeApps").toSet(),
-                    moreApps = list(o, "moreApps").toSet()
+                    moreApps = list(o, "moreApps").toSet(),
+                    showPlayer = o.optBoolean("player", true),
+                    showQuotes = o.optBoolean("quotes", true)
                 )
             } catch (_: Exception) { Config() }
         }

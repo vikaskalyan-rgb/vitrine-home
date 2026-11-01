@@ -396,12 +396,14 @@ class MainActivity : Activity() {
             bottomMargin = Y(330f).toInt()
         })
         showLastPlayed()
+        if (!cfg.showPlayer) nowChip.visibility = View.GONE
         // Bottom right: a famous line from a favourite game or film, a random one every 10 seconds.
         quoteView = QuoteView(this).apply { textPx = Y(25f) }
         dockLayer.addView(quoteView, FrameLayout.LayoutParams(X(560f).toInt(), Y(150f).toInt(), Gravity.BOTTOM or Gravity.END).apply {
             rightMargin = side; bottomMargin = Y(24f).toInt()
         })
         quoteView.load(loadQuotes())
+        if (!cfg.showQuotes) quoteView.visibility = View.GONE
 
         // Level 2: all apps. Wallpaper dims, glass tiles rise from below. Up from the top row or Back returns.
         gridLayer = FrameLayout(this).apply { visibility = View.GONE; clipChildren = false; clipToPadding = false }
@@ -544,7 +546,7 @@ class MainActivity : Activity() {
         }
         if (nowPage.playing && !wasPlaying) stack.showPage(nowPage)   // music just started: show it
         nowChip.set(nowPage.title ?: "", nowPage.artist, nowPage.playing, nowPage.art)
-        if (nowPage.playing && resumedNow) beat.start() else beat.stop()
+        if (nowPage.playing && resumedNow && cfg.showPlayer) beat.start() else beat.stop()
         rememberLastPlayed(c.packageName, nowPage.title ?: "", nowPage.artist, nowPage.art)
         if (nowPage.playing) {
             ui.removeCallbacks(hideNowBar)

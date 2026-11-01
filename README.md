@@ -51,6 +51,7 @@ the Android SDK.
   grant: `dpm set-active-admin --user 0 app.vitrine.home/.SleepAdmin`).
 - **Quotes:** a famous game or film line, bottom right, a new one every 10 seconds
   (`app/src/main/res/raw/quotes.txt`, or push your own `quotes.txt` to the app's files folder).
+  `"quotes": false` in config.json hides them; `"player": false` hides the music player.
 
 ## Using it
 
